@@ -3,6 +3,7 @@ uvicorn[standard]
 psycopg2-binary # For connecting to PostgreSQL
 numpy # Often a dependency for ML/vector libraries
 scipy # Often a dependency for ML/vector libraries
+sqlalchemy
 # You'll add more here as you build out features:
 # qdrant-client # If you decide to use Qdrant directly
 # sentence-transformers # For generating embeddings locally, if not using an API
