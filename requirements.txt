@@ -7,6 +7,8 @@ sqlalchemy
 requests
 sentence-transformers
 pgvector
+pydantic
+typing
 # You'll add more here as you build out features:
 # qdrant-client # If you decide to use Qdrant directly
 # sentence-transformers # For generating embeddings locally, if not using an API
