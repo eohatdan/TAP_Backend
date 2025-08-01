@@ -141,60 +141,75 @@ async def health_check(db: SessionLocal = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database connection failed: {e}")
 
-@app.post("/ingest-data", status_code=status.HTTP_201_CREATED)
-async def ingest_data(query: str, limit: int = 100, db: SessionLocal = Depends(get_db)):
-    """
-    Fetches papers from Semantic Scholar based on a query, generates embeddings,
-    and stores them in the database.
-    """
-    global embedding_model
-    if embedding_model is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Embedding model not loaded.")
+# Assuming these imports are already present in your server.py
+# from fastapi import FastAPI, Request
+# from pydantic import BaseModel
+# from typing import List
+import requests # We need to import requests for this
+from typing import Optional
 
-    # 1. Fetch data from Semantic Scholar Public API
-    logger.info(f"Fetching papers for query: '{query}' with limit={limit}...")
-    url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={query}&limit={limit}&fields=title,abstract,authors,url"
+# Placeholder for your SentenceTransformer model
+# from sentence_transformers import SentenceTransformer
+# embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Placeholder for your Vector Database client
+# from your_vector_db_library import YourVectorDBClient
+# vector_db_client = YourVectorDBClient()
+
+# Define the request body schema for data ingestion
+class IngestDataRequest(BaseModel):
+    # 'text_to_ingest' is optional, as we can get text from a URL
+    text_to_ingest: Optional[str] = None
+    # 'url' is also optional, but one of the two must be provided
+    url: Optional[str] = "https://storage.googleapis.com/file_xfer_bucket/test_data.txt"
+
+@app.post("/ingest-data")
+async def ingest_data(request_body: IngestDataRequest):
+    """
+    Ingests text data from either the request body or a URL, chunks it,
+    and stores its embeddings in the vector database.
+    """
     try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raises an HTTPError for 4xx/5xx status codes
-        data = response.json()
+        # Check if either text or a URL was provided
+        if not request_body.text_to_ingest and not request_body.url:
+            return {"error": "Either 'text_to_ingest' or 'url' must be provided."}, 400
+        
+        text_content = ""
+        # If a URL is provided, fetch the text from it
+        if request_body.url:
+            print(f"Fetching data from URL: {request_body.url}")
+            response = requests.get(request_body.url)
+            response.raise_for_status() # Raise an exception for bad status codes
+            text_content = response.text
+        # Otherwise, use the text from the request body
+        else:
+            text_content = request_body.text_to_ingest
+
+        # Step 1: Chunk the text content
+        # This is a simple placeholder. For real applications, you'd use a more
+        # sophisticated chunking strategy (e.g., based on sentences or paragraphs).
+        # We'll split by double newline here as a simple example.
+        text_chunks = text_content.split("\n\n")
+
+        # Step 2: Create embeddings for each chunk
+        # This is a placeholder. You need to implement the actual embedding logic here.
+        # embeddings = embedding_model.encode(text_chunks)
+        embeddings = [embedding_model.encode(chunk) for chunk in text_chunks]
+
+        # Step 3: Store the chunks and embeddings in the vector database
+        # This is a placeholder. You need to implement the actual storage logic here.
+        await vector_db_client.store_embeddings_and_texts(embeddings, text_chunks)
+
+        return {"message": f"Successfully ingested {len(text_chunks)} chunks of data."}
+
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch data from Semantic Scholar: {e}")
-
-    papers_to_ingest = []
-    if 'data' not in data:
-        return {"message": "No papers found for this query."}
-
-    # 2. Process and embed each paper
-    for paper_data in data['data']:
-        if paper_data.get('abstract') and paper_data.get('title'):
-            authors_list = [author['name'] for author in paper_data.get('authors', [])]
-            
-            # Combine title and abstract for a richer embedding
-            text_to_embed = f"Title: {paper_data['title']}. Abstract: {paper_data['abstract']}"
-            
-            embedding = embedding_model.encode(text_to_embed).tolist()
-            
-            paper_entry = Paper(
-                title=paper_data['title'],
-                abstract=paper_data['abstract'],
-                authors=", ".join(authors_list),
-                url=paper_data.get('url'),
-                embedding=embedding
-            )
-            papers_to_ingest.append(paper_entry)
-
-    # 3. Store in the database
-    logger.info(f"Ingesting {len(papers_to_ingest)} papers into the database...")
-    try:
-        db.bulk_save_objects(papers_to_ingest)
-        db.commit()
+        print(f"Error fetching data from URL: {e}")
+        return {"error": f"An error occurred while fetching data: {e}"}, 500
     except Exception as e:
-        db.rollback()
-        logger.error(f"Database ingestion failed: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database ingestion failed: {e}")
-    
-    return {"message": f"Successfully ingested {len(papers_to_ingest)} papers.", "papers_ingested": len(papers_to_ingest)}
+        # Handle any other errors that occur during the ingestion process
+        print(f"Error during data ingestion: {e}")
+        return {"error": f"An internal server error occurred: {e}"}, 500
+
 
 # Assuming these imports are already present in your server.py
 # from fastapi import FastAPI, Request
