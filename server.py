@@ -196,3 +196,52 @@ async def ingest_data(query: str, limit: int = 100, db: SessionLocal = Depends(g
     
     return {"message": f"Successfully ingested {len(papers_to_ingest)} papers.", "papers_ingested": len(papers_to_ingest)}
 
+# Assuming these imports are already present in your server.py
+# from fastapi import FastAPI, Request
+# from pydantic import BaseModel
+# from typing import List
+
+# Placeholder for your LLM client (e.g., OpenAI, Gemini, etc.)
+# from your_llm_library import YourLLMClient
+# llm_client = YourLLMClient()
+
+# Placeholder for your Vector Database client
+# from your_vector_db_library import YourVectorDBClient
+# vector_db_client = YourVectorDBClient()
+
+# This endpoint is a GET request and takes a single query parameter.
+@app.get("/query")
+async def query_data(query: str):
+    """
+    Performs a RAG query against the ingested data.
+    """
+    if not query:
+        return {"error": "Query parameter is required."}, 400
+
+    try:
+        # Step 1: Search the vector database for relevant documents
+        # This is a placeholder. You need to implement the actual search logic here.
+        # The search should return chunks of text that are most similar to the user's query.
+        relevant_documents = await vector_db_client.search_vectors(query, top_k=5)
+
+        # Step 2: Combine the user's query with the retrieved documents into a single prompt
+        augmented_prompt = (
+            "Based on the following documents, answer the user's question.\n\n"
+            "Documents:\n"
+            "```\n"
+            f"{' '.join(relevant_documents)}\n"
+            "```\n\n"
+            "User's Question:\n"
+            f"{query}"
+        )
+
+        # Step 3: Send the augmented prompt to the LLM for a final response
+        # This is a placeholder. You need to implement the LLM API call here.
+        llm_response = await llm_client.generate_response(augmented_prompt)
+
+        return {"response": llm_response}
+
+    except Exception as e:
+        # Handle any errors that occur during the process
+        print(f"Error during query processing: {e}")
+        return {"error": f"An internal server error occurred: {e}"}, 500
