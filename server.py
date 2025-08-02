@@ -7,16 +7,67 @@ import os
 import sys
 import re
 
+# --- New Imports for RAG Implementation ---
+import psycopg2
+import numpy as np
+import google.generativeai as genai
+from sentence_transformers import SentenceTransformer
+from pgvector.psycopg2 import register_vector
+from psycopg2.extras import Json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 # Initialize FastAPI application
 app = FastAPI()
 
-# Placeholder for your SentenceTransformer model
-# from sentence_transformers import SentenceTransformer
-# embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+# --- Configuration from Environment Variables ---
+DATABASE_URL = os.getenv("DATABASE_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Placeholder for your Vector Database client
-# from your_vector_db_library import YourVectorDBClient
-# vector_db_client = YourVectorDBClient()
+# --- RAG Components Initialization ---
+# Initialize Sentence Transformer for creating embeddings
+# This can be a memory-intensive step. It's done once on startup.
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Initialize Gemini client
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+else:
+    gemini_model = None
+    print("Warning: GEMINI_API_KEY not found. Gemini API will not be available.")
+
+# Thread pool for asynchronous database operations
+executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
+
+# Helper function to get a database connection
+def get_db_connection():
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
+    return conn
+
+# Helper function to create the table if it doesn't exist
+def create_table_if_not_exists():
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id SERIAL PRIMARY KEY,
+                content TEXT NOT NULL,
+                embedding vector(384) NOT NULL
+            );
+        """)
+        conn.commit()
+    except Exception as e:
+        print(f"Error creating table: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+# Create table on startup
+create_table_if_not_exists()
 
 # Define the request body schemas
 class IngestDataRequest(BaseModel):
@@ -45,18 +96,13 @@ async def ingest_data(request_body: IngestDataRequest):
         text_content = ""
         if request_body.url:
             print(f"Fetching data from URL: {request_body.url}")
-            
-            # Use regex to extract the file ID from a standard Google Docs share link
-            # For example, from "https://docs.google.com/document/d/FILE_ID/edit?usp=sharing"
             match = re.search(r'document/d/([^/]+)', request_body.url)
             
             if match:
                 file_id = match.group(1)
-                # Construct the direct export URL for a plain text file
                 docs_export_url = f"https://docs.google.com/document/d/{file_id}/export?format=txt"
                 response = requests.get(docs_export_url)
             else:
-                # If it's not a Google Docs link, assume it's a direct file URL
                 response = requests.get(request_body.url)
             
             response.raise_for_status()
@@ -65,17 +111,14 @@ async def ingest_data(request_body: IngestDataRequest):
             text_content = request_body.text_to_ingest
 
         # Step 1: Chunk the text content
-        # Placeholder for chunking logic
         text_chunks = text_content.split("\n\n")
 
         # Step 2: Create embeddings for each chunk
-        # Placeholder for embedding logic
-        # embeddings = [embedding_model.encode(chunk) for chunk in text_chunks]
-        embeddings = [0] * len(text_chunks) # Dummy embeddings
+        embeddings = embedding_model.encode(text_chunks)
 
         # Step 3: Store the chunks and embeddings in the vector database
-        # Placeholder for storage logic
-        # await vector_db_client.store_embeddings_and_texts(embeddings, text_chunks)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(executor, insert_chunks_to_db, embeddings, text_chunks)
 
         return {"message": f"Successfully ingested {len(text_chunks)} chunks of data."}
 
@@ -85,6 +128,20 @@ async def ingest_data(request_body: IngestDataRequest):
     except Exception as e:
         print(f"Error during data ingestion: {e}")
         return {"error": f"An internal server error occurred: {e}"}, 500
+
+def insert_chunks_to_db(embeddings, text_chunks):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        for text, embedding in zip(text_chunks, embeddings):
+            # Ensure the embedding is a list of floats for pgvector
+            embedding_list = embedding.tolist()
+            cur.execute("INSERT INTO documents (content, embedding) VALUES (%s, %s)", (text, Json(embedding_list)))
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
 
 # The /query endpoint for POST requests
 @app.post("/query")
@@ -96,14 +153,22 @@ async def query_data(request_body: QueryRequest):
         return {"error": "Query parameter is required in the body."}, 400
 
     try:
-        # Step 1: Search the vector database for relevant documents
-        # Placeholder for search logic
-        # relevant_documents = await vector_db_client.search_vectors(request_body.query, top_k=5)
-        relevant_documents = ["This is a placeholder document chunk 1.", "This is a placeholder document chunk 2."]
+        # Step 1: Create an embedding for the user's query
+        query_embedding = embedding_model.encode([request_body.query])[0]
+        query_embedding_list = query_embedding.tolist()
 
-        # Step 2: Combine the user's query with the retrieved documents
+        # Step 2: Search the vector database for relevant documents
+        relevant_documents = await asyncio.get_event_loop().run_in_executor(
+            executor, search_db_for_vectors, query_embedding_list
+        )
+
+        if not relevant_documents:
+            return {"response": "I could not find any relevant documents to answer your question."}
+
+        # Step 3: Combine the user's query with the retrieved documents
         augmented_prompt = (
-            "Based on the following documents, answer the user's question.\n\n"
+            "Based on the following documents, answer the user's question. "
+            "If the documents do not contain enough information, state that clearly.\n\n"
             "Documents:\n"
             "```\n"
             f"{' '.join(relevant_documents)}\n"
@@ -112,13 +177,32 @@ async def query_data(request_body: QueryRequest):
             f"{request_body.query}"
         )
 
-        # Step 3: Send the augmented prompt to the LLM for a final response
-        # Placeholder for LLM call
-        # llm_response = await llm_client.generate_response(augmented_prompt)
-        llm_response = f"Placeholder response for query: {request_body.query}"
+        # Step 4: Send the augmented prompt to the LLM for a final response
+        if not gemini_model:
+            return {"error": "LLM API not configured. Please check GEMINI_API_KEY."}, 500
+            
+        gemini_response = gemini_model.generate_content(augmented_prompt)
+        llm_response = gemini_response.text
 
         return {"response": llm_response}
 
     except Exception as e:
         print(f"Error during query processing: {e}")
         return {"error": f"An internal server error occurred: {e}"}, 500
+
+def search_db_for_vectors(query_embedding_list):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT content FROM documents
+            ORDER BY embedding <-> %s
+            LIMIT 5;
+        """, (Json(query_embedding_list),))
+        
+        results = [row[0] for row in cur.fetchall()]
+        return results
+    finally:
+        if conn:
+            conn.close()
