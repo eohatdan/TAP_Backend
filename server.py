@@ -156,7 +156,7 @@ async def query_data(request_body: QueryRequest):
         # Step 1: Create an embedding for the user's query
         query_embedding = embedding_model.encode([request_body.query])[0]
         query_embedding_list = query_embedding.tolist()
-
+        print("embedding_list: ",query_embedding_list)
         # Step 2: Search the vector database for relevant documents
         relevant_documents = await asyncio.get_event_loop().run_in_executor(
             executor, search_db_for_vectors, query_embedding_list
