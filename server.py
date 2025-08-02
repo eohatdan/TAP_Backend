@@ -42,15 +42,33 @@ executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
 
 # Helper function to get a database connection
 def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL)
-    register_vector(conn)
-    return conn
+    conn = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        # Check for pgvector extension
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+            if not cur.fetchone():
+                print("Error: pgvector extension not installed in the database.")
+                conn.close()
+                return None
+        register_vector(conn)
+        return conn
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        if conn:
+            conn.close()
+        return None
 
 # Helper function to create the table if it doesn't exist
 def create_table_if_not_exists():
     conn = None
     try:
         conn = get_db_connection()
+        if not conn:
+            print("Skipping table creation due to failed database connection.")
+            return
+
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS documents (
@@ -134,6 +152,10 @@ def insert_chunks_to_db(embeddings, text_chunks):
     conn = None
     try:
         conn = get_db_connection()
+        if not conn:
+            print("Skipping insertion due to failed database connection.")
+            return
+
         cur = conn.cursor()
         for text, embedding in zip(text_chunks, embeddings):
             embedding_list = embedding.tolist()
@@ -143,7 +165,7 @@ def insert_chunks_to_db(embeddings, text_chunks):
     except Exception as e:
         print(f"Error inserting into database: {e}")
         if conn:
-            conn.rollback() # Rollback transaction on error
+            conn.rollback()
     finally:
         if conn:
             conn.close()
@@ -201,6 +223,10 @@ def search_db_for_vectors(query_embedding_list):
     conn = None
     try:
         conn = get_db_connection()
+        if not conn:
+            print("Skipping search due to failed database connection.")
+            return []
+
         cur = conn.cursor()
         cur.execute("""
             SELECT content FROM documents
@@ -210,6 +236,9 @@ def search_db_for_vectors(query_embedding_list):
         
         results = [row[0] for row in cur.fetchall()]
         return results
+    except Exception as e:
+        print(f"Error searching database: {e}")
+        return []
     finally:
         if conn:
             conn.close()
@@ -220,6 +249,9 @@ def check_database():
     conn = None
     try:
         conn = get_db_connection()
+        if not conn:
+            return {"error": "Failed to connect to the database."}, 500
+
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM documents;")
         row_count = cur.fetchone()[0]
