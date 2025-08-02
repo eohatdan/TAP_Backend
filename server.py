@@ -132,6 +132,12 @@ async def ingest_data(request_body: IngestDataRequest):
                 response = requests.get(request_body.url)
             
             response.raise_for_status()
+            
+            # Check if the retrieved content is HTML
+            if response.headers.get('Content-Type') and 'text/html' in response.headers.get('Content-Type'):
+                logging.warning(f"Retrieved content appears to be HTML from URL: {request_body.url}")
+                return {"error": "Failed to retrieve raw text. The URL returned HTML content."}, 500
+            
             text_content = response.text
         else:
             text_content = request_body.text_to_ingest
