@@ -16,9 +16,11 @@ from pgvector.psycopg2 import register_vector
 from psycopg2.extras import Json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import logging
 
 # Initialize FastAPI application
 app = FastAPI()
+logging.basicConfig(level=logging.INFO)
 
 # --- Configuration from Environment Variables ---
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -35,7 +37,7 @@ if GEMINI_API_KEY:
     gemini_model = genai.GenerativeModel('gemini-2.0-flash')
 else:
     gemini_model = None
-    print("Warning: GEMINI_API_KEY not found. Gemini API will not be available.")
+    logging.warning("GEMINI_API_KEY not found. Gemini API will not be available.")
 
 # Thread pool for asynchronous database operations
 executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
@@ -45,17 +47,17 @@ def get_db_connection():
     conn = None
     try:
         conn = psycopg2.connect(DATABASE_URL)
-        # Check for pgvector extension
+        logging.info("Successfully connected to the database.")
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
             if not cur.fetchone():
-                print("Error: pgvector extension not installed in the database.")
+                logging.error("pgvector extension not installed in the database.")
                 conn.close()
                 return None
         register_vector(conn)
         return conn
     except Exception as e:
-        print(f"Error connecting to database: {e}")
+        logging.error(f"Error connecting to database: {e}")
         if conn:
             conn.close()
         return None
@@ -66,7 +68,7 @@ def create_table_if_not_exists():
     try:
         conn = get_db_connection()
         if not conn:
-            print("Skipping table creation due to failed database connection.")
+            logging.warning("Skipping table creation due to failed database connection.")
             return
 
         cur = conn.cursor()
@@ -78,9 +80,9 @@ def create_table_if_not_exists():
             );
         """)
         conn.commit()
-        print("Documents table checked/created successfully.")
+        logging.info("Documents table checked/created successfully.")
     except Exception as e:
-        print(f"Error creating table: {e}")
+        logging.error(f"Error creating table: {e}")
     finally:
         if conn:
             conn.close()
@@ -114,7 +116,7 @@ async def ingest_data(request_body: IngestDataRequest):
         
         text_content = ""
         if request_body.url:
-            print(f"Fetching data from URL: {request_body.url}")
+            logging.info(f"Fetching data from URL: {request_body.url}")
             match = re.search(r'document/d/([^/]+)', request_body.url)
             
             if match:
@@ -142,10 +144,10 @@ async def ingest_data(request_body: IngestDataRequest):
         return {"message": f"Successfully ingested {len(text_chunks)} chunks of data."}
 
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching data from URL: {e}")
+        logging.error(f"Error fetching data from URL: {e}")
         return {"error": f"An error occurred while fetching data: {e}"}, 500
     except Exception as e:
-        print(f"Error during data ingestion: {e}")
+        logging.error(f"Error during data ingestion: {e}")
         return {"error": f"An internal server error occurred: {e}"}, 500
 
 def insert_chunks_to_db(embeddings, text_chunks):
@@ -153,7 +155,7 @@ def insert_chunks_to_db(embeddings, text_chunks):
     try:
         conn = get_db_connection()
         if not conn:
-            print("Skipping insertion due to failed database connection.")
+            logging.warning("Skipping insertion due to failed database connection.")
             return
 
         cur = conn.cursor()
@@ -161,9 +163,9 @@ def insert_chunks_to_db(embeddings, text_chunks):
             embedding_list = embedding.tolist()
             cur.execute("INSERT INTO documents (content, embedding) VALUES (%s, %s)", (text, Json(embedding_list)))
         conn.commit()
-        print(f"Successfully inserted {len(text_chunks)} rows into the documents table.")
+        logging.info(f"Successfully inserted {len(text_chunks)} rows into the documents table.")
     except Exception as e:
-        print(f"Error inserting into database: {e}")
+        logging.error(f"Error inserting into database: {e}")
         if conn:
             conn.rollback()
     finally:
@@ -183,13 +185,13 @@ async def query_data(request_body: QueryRequest):
         # Step 1: Create an embedding for the user's query
         query_embedding = embedding_model.encode([request_body.query])[0]
         query_embedding_list = query_embedding.tolist()
-        print(f"Query embedding list generated. Length: {len(query_embedding_list)}")
+        logging.info(f"Query embedding list generated. Length: {len(query_embedding_list)}")
 
         # Step 2: Search the vector database for relevant documents
         relevant_documents = await asyncio.get_event_loop().run_in_executor(
             executor, search_db_for_vectors, query_embedding_list
         )
-        print(f"Found {len(relevant_documents)} relevant documents from database.")
+        logging.info(f"Found {len(relevant_documents)} relevant documents from database.")
         
         if not relevant_documents:
             return {"response": "I could not find any relevant documents to answer your question."}
@@ -216,7 +218,7 @@ async def query_data(request_body: QueryRequest):
         return {"response": llm_response}
 
     except Exception as e:
-        print(f"Error during query processing: {e}")
+        logging.error(f"Error during query processing: {e}")
         return {"error": f"An internal server error occurred: {e}"}, 500
 
 def search_db_for_vectors(query_embedding_list):
@@ -224,7 +226,7 @@ def search_db_for_vectors(query_embedding_list):
     try:
         conn = get_db_connection()
         if not conn:
-            print("Skipping search due to failed database connection.")
+            logging.warning("Skipping search due to failed database connection.")
             return []
 
         cur = conn.cursor()
@@ -237,7 +239,7 @@ def search_db_for_vectors(query_embedding_list):
         results = [row[0] for row in cur.fetchall()]
         return results
     except Exception as e:
-        print(f"Error searching database: {e}")
+        logging.error(f"Error searching database: {e}")
         return []
     finally:
         if conn:
@@ -257,6 +259,7 @@ def check_database():
         row_count = cur.fetchone()[0]
         return {"message": f"Documents table contains {row_count} rows."}
     except Exception as e:
+        logging.error(f"Error checking database: {e}")
         return {"error": f"Error checking database: {e}"}, 500
     finally:
         if conn:
