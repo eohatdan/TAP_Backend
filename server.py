@@ -72,6 +72,11 @@ def create_table_if_not_exists():
             return
 
         cur = conn.cursor()
+        # Drop table for clean state in debugging
+        cur.execute("DROP TABLE IF EXISTS documents;")
+        conn.commit()
+        logging.info("Documents table dropped for a clean restart.")
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 id SERIAL PRIMARY KEY,
@@ -133,9 +138,11 @@ async def ingest_data(request_body: IngestDataRequest):
 
         # Step 1: Chunk the text content
         text_chunks = text_content.split("\n\n")
+        logging.info(f"Chunked data into {len(text_chunks)} chunks.")
 
         # Step 2: Create embeddings for each chunk
         embeddings = embedding_model.encode(text_chunks)
+        logging.info(f"Created {len(embeddings)} embeddings.")
 
         # Step 3: Store the chunks and embeddings in the vector database
         loop = asyncio.get_event_loop()
@@ -192,6 +199,7 @@ async def query_data(request_body: QueryRequest):
             executor, search_db_for_vectors, query_embedding_list
         )
         logging.info(f"Found {len(relevant_documents)} relevant documents from database.")
+        logging.info(f"Retrieved documents: {relevant_documents}") # Log the retrieved content
         
         if not relevant_documents:
             return {"response": "I could not find any relevant documents to answer your question."}
@@ -207,7 +215,8 @@ async def query_data(request_body: QueryRequest):
             "User's Question:\n"
             f"{request_body.query}"
         )
-
+        logging.info(f"Augmented prompt sent to LLM: {augmented_prompt}") # Log the prompt
+        
         # Step 4: Send the augmented prompt to the LLM for a final response
         if not gemini_model:
             return {"error": "LLM API not configured. Please check GEMINI_API_KEY."}, 500
