@@ -60,6 +60,7 @@ def create_table_if_not_exists():
             );
         """)
         conn.commit()
+        print("Documents table checked/created successfully.")
     except Exception as e:
         print(f"Error creating table: {e}")
     finally:
@@ -135,10 +136,14 @@ def insert_chunks_to_db(embeddings, text_chunks):
         conn = get_db_connection()
         cur = conn.cursor()
         for text, embedding in zip(text_chunks, embeddings):
-            # Ensure the embedding is a list of floats for pgvector
             embedding_list = embedding.tolist()
             cur.execute("INSERT INTO documents (content, embedding) VALUES (%s, %s)", (text, Json(embedding_list)))
         conn.commit()
+        print(f"Successfully inserted {len(text_chunks)} rows into the documents table.")
+    except Exception as e:
+        print(f"Error inserting into database: {e}")
+        if conn:
+            conn.rollback() # Rollback transaction on error
     finally:
         if conn:
             conn.close()
@@ -156,12 +161,14 @@ async def query_data(request_body: QueryRequest):
         # Step 1: Create an embedding for the user's query
         query_embedding = embedding_model.encode([request_body.query])[0]
         query_embedding_list = query_embedding.tolist()
-        print("embedding_list: ",query_embedding_list)
+        print(f"Query embedding list generated. Length: {len(query_embedding_list)}")
+
         # Step 2: Search the vector database for relevant documents
         relevant_documents = await asyncio.get_event_loop().run_in_executor(
             executor, search_db_for_vectors, query_embedding_list
         )
-
+        print(f"Found {len(relevant_documents)} relevant documents from database.")
+        
         if not relevant_documents:
             return {"response": "I could not find any relevant documents to answer your question."}
 
@@ -203,6 +210,22 @@ def search_db_for_vectors(query_embedding_list):
         
         results = [row[0] for row in cur.fetchall()]
         return results
+    finally:
+        if conn:
+            conn.close()
+
+# --- New Debugging Endpoint ---
+@app.get("/check-database")
+def check_database():
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM documents;")
+        row_count = cur.fetchone()[0]
+        return {"message": f"Documents table contains {row_count} rows."}
+    except Exception as e:
+        return {"error": f"Error checking database: {e}"}, 500
     finally:
         if conn:
             conn.close()
