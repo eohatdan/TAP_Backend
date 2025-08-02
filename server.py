@@ -5,6 +5,7 @@ from typing import List, Optional
 import requests
 import os
 import sys
+import re
 
 # Initialize FastAPI application
 app = FastAPI()
@@ -44,7 +45,20 @@ async def ingest_data(request_body: IngestDataRequest):
         text_content = ""
         if request_body.url:
             print(f"Fetching data from URL: {request_body.url}")
-            response = requests.get(request_body.url)
+            
+            # Use regex to extract the file ID from a standard Google Docs share link
+            # For example, from "https://docs.google.com/document/d/FILE_ID/edit?usp=sharing"
+            match = re.search(r'document/d/([^/]+)', request_body.url)
+            
+            if match:
+                file_id = match.group(1)
+                # Construct the direct export URL for a plain text file
+                docs_export_url = f"https://docs.google.com/document/d/{file_id}/export?format=txt"
+                response = requests.get(docs_export_url)
+            else:
+                # If it's not a Google Docs link, assume it's a direct file URL
+                response = requests.get(request_body.url)
+            
             response.raise_for_status()
             text_content = response.text
         else:
