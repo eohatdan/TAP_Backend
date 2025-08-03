@@ -77,9 +77,12 @@ def create_table_if_not_exists():
             logging.warning("Skipping table creation due to failed database connection.")
             return
         cur = conn.cursor()
-        cur.execute("DROP TABLE IF EXISTS documents;")
-        conn.commit()
-        logging.info("Documents table dropped for a clean restart.")
+        
+        # The DROP TABLE command has been removed to allow the database to persist data.
+        # cur.execute("DROP TABLE IF EXISTS documents;")
+        # conn.commit()
+        # logging.info("Documents table dropped for a clean restart.")
+        
         cur.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 id SERIAL PRIMARY KEY,
