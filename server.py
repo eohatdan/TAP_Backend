@@ -13,8 +13,20 @@ from sentence_transformers import SentenceTransformer
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import Json
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures iimport logging
+import uuid
 import logging
+from typing import List, Dict
+from fastapi import FastAPI, Depends, HTTPException, status
+from sqlalchemy import create_engine, text, Column, String
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.exc import OperationalError
+# A key dependency for vector embeddings
+from pgvector.sqlalchemy import Vector
+
+
+
 
 # Initialize FastAPI application
 app = FastAPI()
@@ -242,3 +254,80 @@ def check_database():
     finally:
         if conn:
             conn.close()
+@app.post("/bulk-load-gist", status_code=status.HTTP_201_CREATED)
+async def bulk_load_gist(gist_id: str, db: SessionLocal = Depends(get_db)):
+    """
+    Drops all existing data, fetches content from a multi-file Gist,
+    and ingests each file as a separate document.
+    """
+    global embedding_model
+    if embedding_model is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Embedding model not loaded.")
+
+    # 1. Drop all existing data
+    logger.info("Dropping existing 'papers' table to prepare for bulk load...")
+    try:
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine) # Re-create the table
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to drop/re-create table: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to reset database: {e}")
+    
+    # 2. Fetch Gist metadata to get file URLs
+    logger.info(f"Fetching Gist metadata for ID: {gist_id}...")
+    api_url = f"https://api.github.com/gists/{gist_id}"
+    try:
+        response = requests.get(api_url)
+        response.raise_for_status()
+        gist_data = response.json()
+        files = gist_data.get('files', {})
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch Gist metadata: {e}")
+
+    papers_to_ingest = []
+    if not files:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No files found in the specified Gist.")
+
+    # 3. Process and embed each file in the Gist
+    for filename, file_info in files.items():
+        raw_url = file_info.get('raw_url')
+        if not raw_url:
+            logger.warning(f"File '{filename}' in Gist has no raw_url. Skipping.")
+            continue
+        
+        logger.info(f"Fetching content for file: '{filename}' from URL: {raw_url}")
+        try:
+            content_response = requests.get(raw_url)
+            content_response.raise_for_status()
+            content = content_response.text
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to fetch content from {raw_url}: {e}")
+            continue # Skip this file and try the next one
+
+        # A simple way to chunk the text: just use the whole file content for now
+        # For a real-world app, you would chunk it here.
+        text_to_embed = content
+
+        embedding = embedding_model.encode(text_to_embed).tolist()
+        
+        paper_entry = Paper(
+            title=filename,  # Using filename as title for simplicity
+            abstract=content, # Using content as abstract
+            authors="Gist User", # Placeholder
+            url=raw_url,
+            embedding=embedding
+        )
+        papers_to_ingest.append(paper_entry)
+
+    # 4. Store all data in the database
+    logger.info(f"Ingesting {len(papers_to_ingest)} documents into the database...")
+    try:
+        db.bulk_save_objects(papers_to_ingest)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Database ingestion failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database ingestion failed: {e}")
+
+    return {"message": f"Successfully loaded and ingested {len(papers_to_ingest)} documents.", "documents_ingested": len(papers_to_ingest)}
