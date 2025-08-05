@@ -1,9 +1,8 @@
 fastapi
 uvicorn[standard]
-requests
-pydantic
+sqlalchemy
 psycopg2-binary
-pgvector
-numpy
+requests
 sentence-transformers
-google-generativeai
+pgvector
+
