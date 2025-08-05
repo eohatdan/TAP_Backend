@@ -5,4 +5,6 @@ psycopg2-binary
 requests
 sentence-transformers
 pgvector
+google-generativeai
+
 
