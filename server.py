@@ -204,6 +204,7 @@ async def bulk_load_gist(gist_id: str, db: SessionLocal = Depends(get_db)):
         gist_data = response.json()
         files = gist_data.get('files', {})
     except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch Gist metadata: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch Gist metadata: {e}")
 
     papers_to_ingest = []
@@ -250,4 +251,4 @@ async def bulk_load_gist(gist_id: str, db: SessionLocal = Depends(get_db)):
         logger.error(f"Database ingestion failed: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database ingestion failed: {e}")
 
-    return {"message": f"Successfully loaded and ingested {len(papers_to_ingest)} documents.", "documents_ingested": len(papers_to_ingested)}
+    return {"message": f"Successfully loaded and ingested {len(papers_to_ingest)} documents.", "documents_ingested": len(papers_to_ingest)}
