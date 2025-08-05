@@ -5,7 +5,7 @@ import requests
 import uuid
 import logging
 from typing import List, Dict
-from concurrent.futures import ThreadPoolExecutor # <- This is the fix
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy import create_engine, text, Column, String
@@ -20,7 +20,6 @@ from pgvector.sqlalchemy import Vector
 from sentence_transformers import SentenceTransformer
 
 # --- Logging Configuration ---
-# Correct way to import and configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -34,42 +33,33 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 if not DATABASE_URL:
     logger.error("DATABASE_URL environment variable not set. Please configure it on Render.")
-    # In a production app, you would raise an exception here to prevent startup
-    # For this prototype, we'll let the startup event handle the connection failure
     pass
 
 # SQLAlchemy setup
-# We use a declarative base for defining our database tables as Python classes
 Base = declarative_base()
 
 # Create a database engine
-# `pool_pre_ping=True` helps maintain a stable connection pool on Render.
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # Create a session local class for database interactions
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # --- Database Models ---
-# This class defines the structure of our 'papers' table.
-# It includes a vector column for the embedding.
 class Paper(Base):
     __tablename__ = 'papers'
     
-    # We use a UUID as the primary key for uniqueness
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String)
     abstract = Column(String)
     authors = Column(String)
     url = Column(String)
     
-    # The crucial pgvector column for our embeddings
     embedding = Column(Vector(384))
 
 # --- Dependency to get a database session ---
 def get_db():
     """
     Dependency function to provide a database session to API endpoints.
-    It automatically closes the session after the request is complete.
     """
     db = SessionLocal()
     try:
@@ -88,10 +78,6 @@ app = FastAPI(
 async def startup_event():
     """
     This event handler runs once when the application starts up.
-    It's used to:
-    1. Verify a successful database connection.
-    2. Load the embedding model into memory for fast access.
-    3. Ensure the 'papers' table exists in the database.
     """
     logger.info("Backend application starting up...")
     
@@ -102,7 +88,6 @@ async def startup_event():
         logger.info("Successfully connected to the database!")
     except OperationalError as e:
         logger.error(f"Database connection failed on startup: {e}")
-        # Raising an exception here will prevent the application from starting
         raise HTTPException(status_code=500, detail=f"Database connection failed: {e}")
 
     # 2. Load the embedding model
@@ -113,7 +98,6 @@ async def startup_event():
         logger.info("Model loaded successfully!")
     except Exception as e:
         logger.error(f"Error loading model: {e}")
-        # If the model fails to load, the app is non-functional for ingestion/search
         raise HTTPException(status_code=500, detail="Failed to load embedding model.")
 
     # 3. Create the 'papers' table if it doesn't exist
@@ -134,7 +118,6 @@ async def health_check(db: SessionLocal = Depends(get_db)):
     Health check endpoint to verify API and database connectivity.
     """
     try:
-        # A simple query to check the database connection
         db.execute(text("SELECT 1"))
         return {"status": "ok", "database_connection": "successful"}
     except Exception as e:
@@ -150,12 +133,11 @@ async def ingest_data(query: str, limit: int = 100, db: SessionLocal = Depends(g
     if embedding_model is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Embedding model not loaded.")
 
-    # 1. Fetch data from Semantic Scholar Public API
     logger.info(f"Fetching papers for query: '{query}' with limit={limit}...")
     url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={query}&limit={limit}&fields=title,abstract,authors,url"
     try:
         response = requests.get(url)
-        response.raise_for_status()  # Raises an HTTPError for 4xx/5xx status codes
+        response.raise_for_status()
         data = response.json()
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch data from Semantic Scholar: {e}")
@@ -164,12 +146,10 @@ async def ingest_data(query: str, limit: int = 100, db: SessionLocal = Depends(g
     if 'data' not in data:
         return {"message": "No papers found for this query."}
 
-    # 2. Process and embed each paper
     for paper_data in data['data']:
         if paper_data.get('abstract') and paper_data.get('title'):
             authors_list = [author['name'] for author in paper_data.get('authors', [])]
             
-            # Combine title and abstract for a richer embedding
             text_to_embed = f"Title: {paper_data['title']}. Abstract: {paper_data['abstract']}"
             
             embedding = embedding_model.encode(text_to_embed).tolist()
@@ -183,7 +163,6 @@ async def ingest_data(query: str, limit: int = 100, db: SessionLocal = Depends(g
             )
             papers_to_ingest.append(paper_entry)
 
-    # 3. Store in the database
     logger.info(f"Ingesting {len(papers_to_ingest)} papers into the database...")
     try:
         db.bulk_save_objects(papers_to_ingest)
@@ -194,3 +173,81 @@ async def ingest_data(query: str, limit: int = 100, db: SessionLocal = Depends(g
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database ingestion failed: {e}")
     
     return {"message": f"Successfully ingested {len(papers_to_ingest)} papers.", "papers_ingested": len(papers_to_ingest)}
+
+
+@app.post("/bulk-load-gist", status_code=status.HTTP_201_CREATED)
+async def bulk_load_gist(gist_id: str, db: SessionLocal = Depends(get_db)):
+    """
+    Drops all existing data, fetches content from a multi-file Gist,
+    and ingests each file as a separate document.
+    """
+    global embedding_model
+    if embedding_model is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Embedding model not loaded.")
+
+    # 1. Drop all existing data
+    logger.info("Dropping existing 'papers' table to prepare for bulk load...")
+    try:
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine) # Re-create the table
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to drop/re-create table: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to reset database: {e}")
+    
+    # 2. Fetch Gist metadata to get file URLs
+    logger.info(f"Fetching Gist metadata for ID: {gist_id}...")
+    api_url = f"https://api.github.com/gists/{gist_id}"
+    try:
+        response = requests.get(api_url)
+        response.raise_for_status()
+        gist_data = response.json()
+        files = gist_data.get('files', {})
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch Gist metadata: {e}")
+
+    papers_to_ingest = []
+    if not files:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No files found in the specified Gist.")
+
+    # 3. Process and embed each file in the Gist
+    for filename, file_info in files.items():
+        raw_url = file_info.get('raw_url')
+        if not raw_url:
+            logger.warning(f"File '{filename}' in Gist has no raw_url. Skipping.")
+            continue
+        
+        logger.info(f"Fetching content for file: '{filename}' from URL: {raw_url}")
+        try:
+            content_response = requests.get(raw_url)
+            content_response.raise_for_status()
+            content = content_response.text
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to fetch content from {raw_url}: {e}")
+            continue
+
+        # Use the whole file content for now
+        text_to_embed = content
+
+        embedding = embedding_model.encode(text_to_embed).tolist()
+        
+        paper_entry = Paper(
+            title=filename,
+            abstract=content,
+            authors="Gist User",
+            url=raw_url,
+            embedding=embedding
+        )
+        papers_to_ingest.append(paper_entry)
+
+    # 4. Store all data in the database
+    logger.info(f"Ingesting {len(papers_to_ingest)} documents into the database...")
+    try:
+        db.bulk_save_objects(papers_to_ingest)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Database ingestion failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database ingestion failed: {e}")
+
+    return {"message": f"Successfully loaded and ingested {len(papers_to_ingest)} documents.", "documents_ingested": len(papers_to_ingested)}
