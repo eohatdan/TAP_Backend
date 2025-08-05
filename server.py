@@ -13,7 +13,6 @@ from sentence_transformers import SentenceTransformer
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import Json
 import asyncio
-from concurrent.futures import logging
 import uuid
 import logging
 from typing import List, Dict
