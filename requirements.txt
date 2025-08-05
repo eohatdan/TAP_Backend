@@ -6,5 +6,4 @@ requests
 sentence-transformers
 pgvector
 google-generativeai
-
-
+pydantic # Added explicitly for BaseModel import
