@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio # Added for async operations with executor
 
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware # <--- ADDED THIS IMPORT
 from pydantic import BaseModel # Added for request body validation
 from sqlalchemy import create_engine, text, Column, String
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -87,6 +88,25 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# --- CORS Middleware Configuration ---
+# Your GitHub Pages URL is the origin for the frontend
+origins = [
+    "https://eohatdan.github.io", # <--- Make sure this exact URL is here
+    # Add other origins if needed, e.g., for local development:
+    # "http://localhost",
+    # "http://localhost:8000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"], # Allows all headers
+)
+# --- End CORS Middleware ---
+
+
 @app.on_event("startup")
 async def startup_event():
     """
@@ -128,7 +148,6 @@ async def startup_event():
         except Exception as e:
             logger.error(f"Error initializing Gemini LLM: {e}")
             gemini_model = None # Set to None if initialization fails
-            # Do not raise HTTPException here, allow app to start without LLM if key is bad
             logger.warning("Gemini LLM will not be available due to initialization error.")
     else:
         logger.warning("GEMINI_API_KEY not found. Gemini LLM will not be available.")
@@ -228,6 +247,7 @@ async def bulk_load_gist(gist_id: str, db: SessionLocal = Depends(get_db)):
         Base.metadata.create_all(bind=engine) # Re-create the table
         logger.info("Existing 'papers' table dropped and re-created.")
     except Exception as e:
+        db.rollback()
         logger.error(f"Failed to drop/re-create table: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to reset database: {e}")
     
